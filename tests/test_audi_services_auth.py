@@ -237,3 +237,31 @@ async def test_get_id_token_subject_none_when_unauthenticated(service):
     assert service.get_id_token_subject() is None
     service._bearer_token_json = {"id_token": "not-a-jwt"}
     assert service.get_id_token_subject() is None
+
+
+async def test_refresh_if_necessary_keys_on_idk_token_without_mbb_refresh(service, api):
+    """Even when mbboauth issued no refresh_token, the IDK session must refresh."""
+    api.mbb_auth_includes_refresh = False
+    await service.request_device_code()
+    await service.poll_device_token("dev-code-1")
+    api.calls.clear()
+    api.token_endpoint_response = dict(IDK_TOKEN_OK, refresh_token="idk-refresh-2")
+
+    # Not yet near expiry: no refresh.
+    assert await service.refresh_token_if_necessary(0) is False
+    assert api.calls == []
+    # Within 5 minutes of the 3600s expiry: refresh runs against the IDK endpoint.
+    assert await service.refresh_token_if_necessary(3400) is True
+    idk_calls = [c for c in api.calls if c[1] == TOKEN_ENDPOINT]
+    assert len(idk_calls) == 1
+    assert "grant_type=refresh_token" in idk_calls[0][2]
+    assert service.current_refresh_token() == "idk-refresh-2"
+
+
+async def test_refresh_if_necessary_rejected_raises_auth_error(service, api):
+    await service.request_device_code()
+    await service.poll_device_token("dev-code-1")
+    api.token_endpoint_response = {"error": "invalid_grant"}
+
+    with pytest.raises(AudiAuthError):
+        await service.refresh_token_if_necessary(3400)
